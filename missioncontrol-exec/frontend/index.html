@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MissionControl • Splunk AI Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>.card { box-shadow: 0 10px 25px rgba(0,0,0,.35); } .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }</style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div id="root" class="max-w-6xl mx-auto p-4 md:p-6"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    const Card = ({ children, className="" }) => <div className={`card bg-slate-900/70 border border-slate-800 rounded-2xl p-4 mb-4 ${className}`}>{children}</div>;
+    const Button = ({ children, onClick }) => <button onClick={onClick} className="px-4 py-2 rounded-xl font-semibold border border-indigo-400 bg-indigo-600 hover:bg-indigo-500">{children}</button>;
+    const Input = ({ value, onChange, placeholder }) => <input value={value} onChange={onChange} placeholder={placeholder} className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 w-full"/>;
+
+    const TrendChart = ({ points, title }) => {
+      const ref = useRef(null); const chart = useRef(null);
+      useEffect(()=>{
+        if(chart.current) chart.current.destroy();
+        const ctx=ref.current.getContext('2d');
+        const labels=(points||[]).map(p=>new Date(p._time).toLocaleTimeString());
+        const success=(points||[]).map(p=>p.success);
+        const failure=(points||[]).map(p=>p.failure);
+        chart.current=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Success',data:success},{label:'Failure',data:failure}]},options:{plugins:{title:{display:!!title,text:title,color:'#e5e7eb'}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'},beginAtZero:true}}}});
+        return()=>chart.current?.destroy();
+      },[points]);
+      return <canvas ref={ref} height="170"></canvas>;
+    };
+
+    const SummaryTable = ({ summary }) => (
+      <table className="w-full text-sm">
+        <thead><tr><th>Success</th><th>Failure</th><th>Failure %</th></tr></thead>
+        <tbody><tr><td>{summary?.success||0}</td><td>{summary?.failure||0}</td><td>{summary?.failure_pct||0}%</td></tr></tbody>
+      </table>
+    );
+
+    const FailedUrlTable = ({ rows }) => (
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm mt-2">
+          <thead>
+            <tr className="text-slate-400">
+              <th className="text-left py-1">URL Path</th>
+              <th className="text-left py-1">Failure Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows || []).map((f, i) => (
+              <tr key={i} className="border-t border-slate-800">
+                <td className="py-1 break-all mono">{f.urlpath}</td>
+                <td className="py-1">{f.failure_count}</td>
+              </tr>
+            ))}
+            {(!rows || rows.length === 0) && (
+              <tr><td className="py-2 text-slate-400" colSpan={2}>No failed URL paths found in the requested window.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+
+    function App(){
+      const [query,setQuery]=useState("check billpay for last 60 min");
+      const [problem,setProblem]=useState("");
+      const [loading,setLoading]=useState(false);
+      const [data,setData]=useState(null);
+
+      const run=async()=>{
+        setLoading(true);setData(null);
+        try{
+          const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,problem_statement:problem||null})});
+          if(!r.ok)throw new Error(await r.text());
+          const j=await r.json();
+          setData(j);
+        }catch(e){alert(e.message);}finally{setLoading(false);}
+      };
+
+      return (
+        <div>
+          <Card>
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3">
+              <Input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Type command"/>
+              <Input value={problem} onChange={e=>setProblem(e.target.value)} placeholder="Problem statement"/>
+              <Button onClick={run}>{loading?"Running…":"Run"}</Button>
+            </div>
+          </Card>
+
+          {data && (
+            <>
+              <Card>
+                <h3 className="text-lg font-semibold mb-2">Intent</h3>
+                <div className="grid md:grid-cols-2 gap-3 text-sm">
+                  <div><span className="text-slate-400">Flow:</span> <span className="mono">{data.intent?.flow}</span></div>
+                  <div><span className="text-slate-400">Index:</span> <span className="mono">{String(data.intent?.index)}</span></div>
+                  <div><span className="text-slate-400">Window (min):</span> <span className="mono">{String(data.intent?.window_minutes)}</span></div>
+                  <div><span className="text-slate-400">Partner:</span> <span className="mono">{data.intent?.partner ?? '—'}</span></div>
+                </div>
+              </Card>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <Card>
+                  <h3 className="text-lg font-semibold mb-2">Summary</h3>
+                  <SummaryTable summary={data.summary}/>
+                </Card>
+                <Card>
+                  <h3 className="text-lg font-semibold mb-2">Trend (Current Window)</h3>
+                  <TrendChart points={data.timechart} title="Current Window"/>
+                </Card>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <Card>
+                  <h3 className="text-lg font-semibold mb-2">Top Failed URL Paths</h3>
+                  <FailedUrlTable rows={data.failed_urlpaths}/>
+                </Card>
+                <Card>
+                  <h3 className="text-lg font-semibold mb-2">Trend (Previous Day — Same Window)</h3>
+                  <TrendChart points={data.prevday_timechart} title="Previous Day"/>
+                </Card>
+              </div>
+
+              <Card>
+                <h3 className="text-lg font-semibold mb-2">Analysis</h3>
+                <pre className="mono text-sm whitespace-pre-wrap">{data.analysis}</pre>
+              </Card>
+
+              {data.incident && (
+                <Card className="border-emerald-500/40 bg-emerald-500/10">
+                  <h3 className="text-lg font-semibold mb-2">Incident</h3>
+                  <pre className="mono text-sm whitespace-pre-wrap text-emerald-100">{JSON.stringify(data.incident,null,2)}</pre>
+                </Card>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    const root=ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
