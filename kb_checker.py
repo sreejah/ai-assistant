@@ -1,220 +1,227 @@
-
+import os
 SN_INSTANCE=https://your-instance.service-now.com
 SN_USERNAME=your.user
 SN_PASSWORD=your_password
 
-# Optional tweaks (defaults shown)
-EXCEL_PATH=knowledge_list.xlsx
+# Optional tweaks
+EXCEL_PATH=alerts.xlsx
 EXCEL_SHEET=Sheet1
-EXCEL_NAME_COLUMN=ArticleName
-SEARCH_FIELDS=short_description,display_title # comma-separated kb_knowledge fields to search
+EXCEL_COLUMN=            # leave blank to auto-detect alert name column
+SEARCH_FIELDS=display_title,short_description,title
+ONLY_PUBLISHED=false     # set true to require published workflow_state
+KB_BASE_SYS_ID=          # limit to a specific knowledge base if desired
 
 
-import os
+
 import sys
 import time
-import json
 import urllib.parse
-from typing import Dict, List, Tuple, Optional
+from typing import List, Dict
 
 import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-# ---------------------------
-# Config & helpers
-# ---------------------------
 load_dotenv(override=True)
 
+# --- ServiceNow config ---
 SN_INSTANCE = os.getenv("SN_INSTANCE", "").rstrip("/")
 SN_USERNAME = os.getenv("SN_USERNAME")
 SN_PASSWORD = os.getenv("SN_PASSWORD")
+API_URL = f"{SN_INSTANCE}/api/now/table/kb_knowledge"
 
-EXCEL_PATH = os.getenv("EXCEL_PATH", "knowledge_list.xlsx")
+# --- Excel config ---
+EXCEL_PATH = os.getenv("EXCEL_PATH", "alerts.xlsx")
 EXCEL_SHEET = os.getenv("EXCEL_SHEET", "Sheet1")
-EXCEL_NAME_COLUMN = os.getenv("EXCEL_NAME_COLUMN", "ArticleName")
-SEARCH_FIELDS = [f.strip() for f in os.getenv("SEARCH_FIELDS", "short_description,display_title").split(",") if f.strip()]
+EXCEL_COLUMN = (os.getenv("EXCEL_COLUMN") or "").strip()
 
-API_BASE = f"{SN_INSTANCE}/api/now/table/kb_knowledge"
+# --- Search config ---
+SEARCH_FIELDS = [f.strip() for f in os.getenv(
+    "SEARCH_FIELDS", "display_title,short_description,title"
+).split(",") if f.strip()]
 
-# Safety checks
+ONLY_PUBLISHED = os.getenv("ONLY_PUBLISHED", "false").lower() == "true"
+KB_BASE_SYS_ID = os.getenv("KB_BASE_SYS_ID", "").strip()
+
 if not SN_INSTANCE or not SN_USERNAME or not SN_PASSWORD:
-    print("ERROR: Please set SN_INSTANCE, SN_USERNAME and SN_PASSWORD in your .env file.")
+    print("ERROR: Set SN_INSTANCE, SN_USERNAME, SN_PASSWORD in .env")
     sys.exit(1)
 
-HEADERS = {
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-}
-
-SESSION = requests.Session()
-SESSION.auth = (SN_USERNAME, SN_PASSWORD)
-SESSION.headers.update(HEADERS)
-SESSION.timeout = 30  # seconds
+session = requests.Session()
+session.auth = (SN_USERNAME, SN_PASSWORD)
+session.headers.update({"Accept": "application/json", "Content-Type": "application/json"})
+session.timeout = 30
 
 
-def build_sysparm_query(name: str, exact: bool = False) -> str:
-    """
-    Build a ServiceNow sysparm_query that searches across multiple fields.
-    - exact=False: uses LIKE
-    - exact=True: uses '=' (exact match)
-    Also enforces active=true and (optionally) published states if you want.
-    """
-    if not SEARCH_FIELDS:
-        raise ValueError("No SEARCH_FIELDS configured.")
-
-    clauses = []
-    op = "=" if exact else "LIKE"
-    for i, field in enumerate(SEARCH_FIELDS):
-        # First field goes as-is; subsequent fields are OR'd
-        prefix = "" if i == 0 else "^OR"
-        # URL-unsafe values are fine here; SNOW expects raw operators. We will url-encode the entire query later.
-        clauses.append(f"{prefix}{field}{op}{name}")
-
-    # Filter for active + (optionally) published. If your instance uses a different workflow field, tweak here.
-    # Common options: workflow_state=published OR valid_toISEMPTY^ORvalid_to>{today}
-    # We'll keep it simple with active=true and allow any workflow state.
-    base = "active=true"
-    return base + "^" + "".join(clauses)
+def test_connection() -> None:
+    """Check basic connectivity & auth by hitting kb_knowledge with a tiny query."""
+    url = API_URL + "?sysparm_fields=sys_id&sysparm_limit=1"
+    try:
+        r = session.get(url)
+        r.raise_for_status()
+        print("ServiceNow connection successful.")
+    except requests.HTTPError as e:
+        print(f"ServiceNow connection failed (HTTP {e.response.status_code}). Details: {e.response.text[:200]}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ServiceNow connection failed: {e}")
+        sys.exit(1)
 
 
-def query_kb(name: str) -> Dict[str, any]:
-    """
-    Query SNOW for a given article name, returning:
-      - available_exact: bool
-      - available_partial: bool
-      - matches: list of matched records (subset of fields)
-    """
-    results = {
-        "name": name,
-        "available_exact": False,
-        "available_partial": False,
-        "matches": [],  # each item: {number, sys_id, short_description, display_title, workflow_state}
-        "error": None,
-    }
+def find_alert_column(df: pd.DataFrame) -> str:
+    """Auto-detect the alert name column if EXCEL_COLUMN isn't set."""
+    if EXCEL_COLUMN and EXCEL_COLUMN in df.columns:
+        return EXCEL_COLUMN
 
-    for exact in (True, False):
-        try:
-            sysparm_query = build_sysparm_query(name, exact=exact)
-            params = {
-                # Return a small set of useful fields. Add more if you need them.
-                "sysparm_fields": "number,sys_id,short_description,display_title,workflow_state,active",
-                "sysparm_limit": "10",
-                "sysparm_query": sysparm_query,
-            }
-            # Encode query safely
-            url = API_BASE + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-            resp = SESSION.get(url)
-            resp.raise_for_status()
-            data = resp.json()
+    # Common variants (case-insensitive)
+    candidates = [
+        "alert", "alert_name", "alertname", "alert names", "alert_name_column",
+        "alert title", "alert_title", "splunk_alert", "name", "alertnames", "Alert Name"
+    ]
+    lower_map = {c.lower(): c for c in df.columns}
+    for c in candidates:
+        if c.lower() in lower_map:
+            return lower_map[c.lower()]
 
-            # SNOW returns {"result": [...]}
-            matches = data.get("result", [])
-            # Normalize & store
-            for m in matches:
-                results["matches"].append({
-                    "number": m.get("number"),
-                    "sys_id": m.get("sys_id"),
-                    "short_description": m.get("short_description"),
-                    "display_title": m.get("display_title"),
-                    "workflow_state": m.get("workflow_state"),
-                    "active": m.get("active"),
-                })
-
-            if exact:
-                # Mark exact availability if any record's chosen field(s) equals the name (case-insensitive)
-                for m in matches:
-                    for field in SEARCH_FIELDS:
-                        val = (m.get(field) or "").strip()
-                        if val.lower() == name.strip().lower():
-                            results["available_exact"] = True
-                            break
-                    if results["available_exact"]:
-                        break
-            else:
-                results["available_partial"] = len(matches) > 0
-
-        except requests.HTTPError as e:
-            results["error"] = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-            break
-        except Exception as e:
-            results["error"] = str(e)
-            break
-
-        # Gentle pacing to avoid rate limits
-        time.sleep(0.15)
-
-    return results
+    # Fallback: first column
+    return df.columns[0]
 
 
-def read_article_names_from_excel(path: str, sheet: str, column: str) -> List[str]:
+def read_alerts(path: str, sheet: str) -> List[str]:
     df = pd.read_excel(path, sheet_name=sheet)
-    if column not in df.columns:
-        raise ValueError(f"Column '{column}' not found in sheet '{sheet}'. Columns: {list(df.columns)}")
-    # Coerce to str and drop NaNs/empties
-    names = [str(x).strip() for x in df[column].dropna().tolist() if str(x).strip()]
+    col = find_alert_column(df)
+    names = [str(x).strip() for x in df[col].dropna() if str(x).strip()]
+    if not names:
+        raise ValueError(f"No alert names found in column '{col}' of {path}")
+    print(f"Using alert name column: '{col}'")
     return names
 
 
+def build_query(name: str, exact: bool) -> str:
+    """Build ServiceNow sysparm_query across multiple fields."""
+    parts = ["active=true"]
+    if ONLY_PUBLISHED:
+        parts.append("workflow_state=published")
+    if KB_BASE_SYS_ID:
+        parts.append(f"kb_knowledge_base={KB_BASE_SYS_ID}")
+
+    op = "=" if exact else "LIKE"
+    for i, field in enumerate(SEARCH_FIELDS):
+        prefix = "" if i == 0 else "^OR"
+        parts.append(f"{prefix}{field}{op}{name}")
+    return "^".join(parts)
+
+
+def search_kb(name: str) -> Dict[str, str]:
+    """
+    Check if 'name' is present in kb_knowledge.
+    Returns dict with Present ('yes'/'no'), MatchType ('EXACT'/'PARTIAL'/'NOT_FOUND'), and a preview.
+    """
+    result = {
+        "AlertName": name,
+        "Present": "no",
+        "MatchType": "NOT_FOUND",
+        "KB_Number": "",
+        "Sys_ID": "",
+        "Display_Title": "",
+        "Short_Description": "",
+        "Workflow_State": "",
+        "Active": "",
+        "Error": ""
+    }
+
+    found_exact = False
+    found_partial = False
+
+    for exact in (True, False):
+        try:
+            q = build_query(name, exact)
+            params = {
+                "sysparm_fields": "number,sys_id,display_title,short_description,workflow_state,active",
+                "sysparm_limit": "10",
+                "sysparm_query": q,
+            }
+            url = API_URL + "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            resp = session.get(url)
+            resp.raise_for_status()
+            items = resp.json().get("result", [])
+
+            if items:
+                if exact:
+                    # exact if any chosen field equals the query (case-insensitive)
+                    for it in items:
+                        for f in SEARCH_FIELDS:
+                            if str(it.get(f, "")).strip().lower() == name.strip().lower():
+                                found_exact = True
+                                break
+                        if found_exact:
+                            break
+                else:
+                    found_partial = True
+
+                first = items[0]
+                result.update({
+                    "KB_Number": first.get("number", ""),
+                    "Sys_ID": first.get("sys_id", ""),
+                    "Display_Title": first.get("display_title", ""),
+                    "Short_Description": first.get("short_description", ""),
+                    "Workflow_State": first.get("workflow_state", ""),
+                    "Active": first.get("active", ""),
+                })
+
+            if exact and found_exact:
+                break
+
+        except requests.HTTPError as e:
+            result["Error"] = f"HTTP {e.response.status_code}: {e.response.text[:180]}"
+            break
+        except Exception as e:
+            result["Error"] = str(e)
+            break
+        finally:
+            time.sleep(0.15)
+
+    if found_exact:
+        result["Present"] = "yes"
+        result["MatchType"] = "EXACT"
+    elif found_partial:
+        result["Present"] = "yes"
+        result["MatchType"] = "PARTIAL"
+    else:
+        result["Present"] = "no"
+        result["MatchType"] = "NOT_FOUND"
+
+    return result
+
+
 def main():
+    test_connection()  # prints "ServiceNow connection successful." on success
+
     try:
-        names = read_article_names_from_excel(EXCEL_PATH, EXCEL_SHEET, EXCEL_NAME_COLUMN)
+        names = read_alerts(EXCEL_PATH, EXCEL_SHEET)
     except Exception as e:
         print(f"ERROR reading Excel: {e}")
         sys.exit(1)
 
-    if not names:
-        print("No article names found in the Excel file.")
-        sys.exit(0)
+    print("\nChecking alert names in ServiceNow Knowledge...\n")
 
-    print(f"Checking {len(names)} knowledge article name(s) against ServiceNow...\n")
-
-    rows = []
-    for name in names:
-        res = query_kb(name)
-        if res["error"]:
-            print(f"[ERROR] {name}: {res['error']}")
+    out_rows = []
+    for nm in names:
+        res = search_kb(nm)
+        if res["Error"]:
+            print(f"[ERROR] {nm}: {res['Error']}")
         else:
-            status = (
-                "EXACT MATCH" if res["available_exact"]
-                else ("PARTIAL MATCH" if res["available_partial"] else "NOT FOUND")
-            )
-            # Show a small preview of the first match
-            preview = ""
-            if res["matches"]:
-                m = res["matches"][0]
-                preview = f"{m.get('number') or ''} | {m.get('short_description') or m.get('display_title') or ''}"
+            # Per request: print 'yes' if present, otherwise 'no'
+            print(f"{nm}: {res['Present']}")
+        out_rows.append(res)
 
-            print(f"[{status}] {name}" + (f"  ->  {preview}" if preview else ""))
+    # Save results for reference
+    out_df = pd.DataFrame(out_rows)
+    out_xlsx = "alerts_results.xlsx"
+    with pd.ExcelWriter(out_xlsx, engine="openpyxl") as w:
+        out_df.to_excel(w, index=False, sheet_name="Results")
 
-        # Prepare CSV row(s)
-        if res["matches"]:
-            for m in res["matches"]:
-                rows.append({
-                    "QueryName": res["name"],
-                    "Status": "EXACT" if res["available_exact"] else ("PARTIAL" if res["available_partial"] else "NOT_FOUND"),
-                    "KB_Number": m.get("number"),
-                    "Sys_ID": m.get("sys_id"),
-                    "Short_Description": m.get("short_description"),
-                    "Display_Title": m.get("display_title"),
-                    "Workflow_State": m.get("workflow_state"),
-                    "Active": m.get("active"),
-                })
-        else:
-            rows.append({
-                "QueryName": res["name"],
-                "Status": "NOT_FOUND" if not (res["available_exact"] or res["available_partial"]) else ("EXACT" if res["available_exact"] else "PARTIAL"),
-                "KB_Number": "",
-                "Sys_ID": "",
-                "Short_Description": "",
-                "Display_Title": "",
-                "Workflow_State": "",
-                "Active": "",
-            })
-
-    out_csv = "snow_kb_check_results.csv"
-    pd.DataFrame(rows).to_csv(out_csv, index=False)
-    print(f"\nReport written to {out_csv}")
+    print(f"\nSaved results to {out_xlsx}")
 
 
 if __name__ == "__main__":
