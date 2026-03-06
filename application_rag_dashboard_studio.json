@@ -1,159 +1,135 @@
 {
-  "title": "Application RAG Status Dashboard",
-  "description": "Mission Control style application health dashboard",
-  "defaults": {
-    "dataSources": {
-      "ds.search": {
-        "options": {
-          "queryParameters": {
-            "earliest": "-60m@m",
-            "latest": "now"
-          }
-        }
-      }
-    }
-  },
-  "inputs": {
-    "input_timerange": {
-      "type": "input.timerange",
-      "title": "Time Range",
+  "visualizations": {
+    "viz_app_overview": {
+      "type": "splunk.table",
+      "dataSources": {
+        "primary": "ds_app_overview"
+      },
+      "title": "Application Overview",
       "options": {
-        "defaultValue": "-60m@m,now"
+        "showInternalFields": false,
+        "count": 20
       }
+    },
+    "viz_app_trend": {
+      "type": "splunk.line",
+      "dataSources": {
+        "primary": "ds_app_trend"
+      },
+      "title": "Application Success vs Failure Trend",
+      "options": {
+        "legendDisplay": "bottom"
+      }
+    },
+    "viz_url_breakdown": {
+      "type": "splunk.table",
+      "dataSources": {
+        "primary": "ds_url_breakdown"
+      },
+      "title": "URL Failure Breakdown",
+      "options": {
+        "showInternalFields": false,
+        "count": 15
+      }
+    },
+    "viz_failed_requests": {
+      "type": "splunk.singlevalue",
+      "dataSources": {
+        "primary": "ds_failed_requests"
+      },
+      "title": "Failed Requests"
+    },
+    "viz_failure_pct": {
+      "type": "splunk.singlevalue",
+      "dataSources": {
+        "primary": "ds_failure_pct"
+      },
+      "title": "Failure %"
     }
   },
   "dataSources": {
     "ds_app_overview": {
       "type": "ds.search",
       "options": {
-        "query": "index=your_index earliest=$input_timerange.earliest$ latest=$input_timerange.latest$ | eval app=coalesce(application, app_name, service_name) | eval url=coalesce(url, uri, endpoint, request_path) | eval is_success=if(http_status>=200 AND http_status<400,1,0) | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_success) as success_count sum(is_failure) as failure_count count as total_count by app url | eval failure_pct=round((failure_count/total_count)*100,2) | eval url_rag=if(failure_pct>10,\"Red\",if(failure_pct>5,\"Amber\",\"Green\")) | eval green_cnt=if(url_rag=\"Green\",1,0) | eval amber_cnt=if(url_rag=\"Amber\",1,0) | eval red_cnt=if(url_rag=\"Red\",1,0) | stats sum(green_cnt) as Green sum(amber_cnt) as Amber sum(red_cnt) as Red sum(success_count) as Success sum(failure_count) as Failure sum(total_count) as Total by app | eval FailurePct=round((Failure/Total)*100,2) | eval ImpactCount=Failure | eval OverallRAG=if(Red>0,\"Red\",if(Amber>0,\"Amber\",\"Green\")) | eval LastUpdated=strftime(now(),\"%Y-%m-%d %H:%M:%S\") | rename app as Application | table Application Green Amber Red Success Failure FailurePct ImpactCount OverallRAG LastUpdated | sort Application",
-        "queryParameters": {
-          "earliest": "$input_timerange.earliest$",
-          "latest": "$input_timerange.latest$"
-        }
+        "query": "index=your_index | eval app=coalesce(application, app_name, service_name) | eval url=coalesce(url, uri, endpoint, request_path) | eval is_success=if(http_status>=200 AND http_status<400,1,0) | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_success) as success_count sum(is_failure) as failure_count count as total_count by app url | eval failure_pct=round((failure_count/total_count)*100,2) | eval url_rag=if(failure_pct>10,\"Red\",if(failure_pct>5,\"Amber\",\"Green\")) | eval green_cnt=if(url_rag=\"Green\",1,0) | eval amber_cnt=if(url_rag=\"Amber\",1,0) | eval red_cnt=if(url_rag=\"Red\",1,0) | stats sum(green_cnt) as Green sum(amber_cnt) as Amber sum(red_cnt) as Red sum(success_count) as Success sum(failure_count) as Failure sum(total_count) as Total by app | eval FailurePct=round((Failure/Total)*100,2) | eval ImpactCount=Failure | eval OverallRAG=if(Red>0,\"Red\",if(Amber>0,\"Amber\",\"Green\")) | rename app as Application | table Application Green Amber Red Success Failure Total FailurePct ImpactCount OverallRAG | sort Application",
+        "enableSmartSources": true
       },
       "name": "Application Overview"
     },
     "ds_app_trend": {
       "type": "ds.search",
       "options": {
-        "query": "index=your_index earliest=$input_timerange.earliest$ latest=$input_timerange.latest$ | eval app=coalesce(application, app_name, service_name) | eval req_status=if(http_status>=200 AND http_status<400,\"Success\",\"Failure\") | timechart span=5m count by req_status",
-        "queryParameters": {
-          "earliest": "$input_timerange.earliest$",
-          "latest": "$input_timerange.latest$"
-        }
+        "query": "index=your_index | eval req_status=if(http_status>=200 AND http_status<400,\"Success\",\"Failure\") | timechart span=5m count by req_status",
+        "enableSmartSources": true
       },
       "name": "Application Request Trend"
     },
     "ds_url_breakdown": {
       "type": "ds.search",
       "options": {
-        "query": "index=your_index earliest=$input_timerange.earliest$ latest=$input_timerange.latest$ | eval app=coalesce(application, app_name, service_name) | eval url=coalesce(url, uri, endpoint, request_path) | eval is_success=if(http_status>=200 AND http_status<400,1,0) | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_success) as Success sum(is_failure) as Failure count as Total by app url | eval FailurePct=round((Failure/Total)*100,2) | eval RAG=if(FailurePct>10,\"Red\",if(FailurePct>5,\"Amber\",\"Green\")) | rename app as Application url as URL | table Application URL Success Failure FailurePct RAG | sort - Failure",
-        "queryParameters": {
-          "earliest": "$input_timerange.earliest$",
-          "latest": "$input_timerange.latest$"
-        }
+        "query": "index=your_index | eval app=coalesce(application, app_name, service_name) | eval url=coalesce(url, uri, endpoint, request_path) | eval is_success=if(http_status>=200 AND http_status<400,1,0) | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_success) as Success sum(is_failure) as Failure count as Total by app url | eval FailurePct=round((Failure/Total)*100,2) | eval RAG=if(FailurePct>10,\"Red\",if(FailurePct>5,\"Amber\",\"Green\")) | rename app as Application url as URL | table Application URL Success Failure Total FailurePct RAG | sort - Failure",
+        "enableSmartSources": true
       },
       "name": "URL Failure Breakdown"
     },
     "ds_failed_requests": {
       "type": "ds.search",
       "options": {
-        "query": "index=your_index earliest=$input_timerange.earliest$ latest=$input_timerange.latest$ | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_failure) as FailedRequests",
-        "queryParameters": {
-          "earliest": "$input_timerange.earliest$",
-          "latest": "$input_timerange.latest$"
-        }
+        "query": "index=your_index | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_failure) as \"Failed Requests\"",
+        "enableSmartSources": true
       },
       "name": "Failed Requests"
     },
     "ds_failure_pct": {
       "type": "ds.search",
       "options": {
-        "query": "index=your_index earliest=$input_timerange.earliest$ latest=$input_timerange.latest$ | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_failure) as fail count as total | eval FailurePct=round((fail/total)*100,2) | table FailurePct",
-        "queryParameters": {
-          "earliest": "$input_timerange.earliest$",
-          "latest": "$input_timerange.latest$"
-        }
+        "query": "index=your_index | eval is_failure=if(http_status>=400 OR status=\"FAILURE\" OR result=\"ERROR\",1,0) | stats sum(is_failure) as fail count as total | eval \"Failure %\"=round((fail/total)*100,2) | table \"Failure %\"",
+        "enableSmartSources": true
       },
       "name": "Failure Percentage"
     }
   },
-  "visualizations": {
-    "viz_app_overview": {
-      "type": "splunk.table",
-      "title": "Application Overview",
-      "dataSources": {
-        "primary": "ds_app_overview"
-      },
-      "options": {
-        "count": 10,
-        "showInternalFields": false
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "latest": "$global_time.latest$",
+            "earliest": "$global_time.earliest$"
+          }
+        }
       }
     },
-    "viz_app_trend": {
-      "type": "splunk.line",
-      "title": "Application Request Trend",
-      "dataSources": {
-        "primary": "ds_app_trend"
-      },
-      "options": {
-        "legendDisplay": "bottom",
-        "showMarkers": true
+    "visualizations": {
+      "global": {
+        "showLastUpdated": true
       }
-    },
-    "viz_url_breakdown": {
-      "type": "splunk.table",
-      "title": "URL Failure Breakdown",
-      "dataSources": {
-        "primary": "ds_url_breakdown"
-      },
+    }
+  },
+  "inputs": {
+    "input_global_trp": {
+      "type": "input.timerange",
       "options": {
-        "count": 12,
-        "showInternalFields": false
-      }
-    },
-    "viz_failed_requests": {
-      "type": "splunk.singlevalue",
-      "title": "Failed Requests",
-      "dataSources": {
-        "primary": "ds_failed_requests"
+        "token": "global_time",
+        "defaultValue": "-60m@m,now"
       },
-      "options": {}
-    },
-    "viz_failure_pct": {
-      "type": "splunk.singlevalue",
-      "title": "Failure %",
-      "dataSources": {
-        "primary": "ds_failure_pct"
-      },
-      "options": {}
+      "title": "Global Time Range"
     }
   },
   "layout": {
     "type": "absolute",
     "options": {
       "width": 1440,
-      "height": 900,
-      "display": "auto-scale"
+      "height": 920,
+      "display": "auto"
     },
     "structure": [
-      {
-        "item": "input_timerange",
-        "type": "block",
-        "position": {
-          "x": 20,
-          "y": 20,
-          "w": 280,
-          "h": 50
-        }
-      },
       {
         "item": "viz_app_overview",
         "type": "block",
         "position": {
           "x": 20,
-          "y": 90,
+          "y": 30,
           "w": 1400,
           "h": 260
         }
@@ -163,7 +139,7 @@
         "type": "block",
         "position": {
           "x": 20,
-          "y": 370,
+          "y": 320,
           "w": 1400,
           "h": 240
         }
@@ -173,31 +149,36 @@
         "type": "block",
         "position": {
           "x": 20,
-          "y": 630,
+          "y": 590,
           "w": 980,
-          "h": 230
+          "h": 280
         }
       },
       {
         "item": "viz_failed_requests",
         "type": "block",
         "position": {
-          "x": 1020,
-          "y": 630,
-          "w": 190,
-          "h": 110
+          "x": 1030,
+          "y": 590,
+          "w": 180,
+          "h": 130
         }
       },
       {
         "item": "viz_failure_pct",
         "type": "block",
         "position": {
-          "x": 1230,
-          "y": 630,
-          "w": 190,
-          "h": 110
+          "x": 1240,
+          "y": 590,
+          "w": 180,
+          "h": 130
         }
       }
+    ],
+    "globalInputs": [
+      "input_global_trp"
     ]
-  }
+  },
+  "description": "Mission Control style application health dashboard",
+  "title": "Application RAG Status Dashboard"
 }
