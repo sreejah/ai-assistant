@@ -1,0 +1,290 @@
+<form version="1.1" theme="dark">
+  <label>Amazon API SLI / SLO Executive Dashboard</label>
+  <description>Regenerated Simple XML dashboard with API summary, previous day trend, and API to URL drilldown.</description>
+
+  <init>
+    <set token="tok_selected_api"></set>
+    <set token="tok_selected_url"></set>
+  </init>
+
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="tok_time">
+      <label>Time Range</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+
+    <input type="multiselect" token="tok_api" searchWhenChanged="true">
+      <label>API Name</label>
+      <choice value="*">All APIs</choice>
+      <search>
+        <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+| stats count by api_name
+| sort api_name
+| fields api_name
+        </query>
+        <earliest>$tok_time.earliest$</earliest>
+        <latest>$tok_time.latest$</latest>
+      </search>
+      <fieldForLabel>api_name</fieldForLabel>
+      <fieldForValue>api_name</fieldForValue>
+      <delimiter>,</delimiter>
+      <valuePrefix>"</valuePrefix>
+      <valueSuffix>"</valueSuffix>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <single>
+        <title>Overall SLO Status</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| eval is_success=if(status_code&gt;=200 AND status_code&lt;500,1,0)
+| eval is_fast=if(response_time_ms&lt;=2000,1,0)
+| stats count as total_requests sum(is_success) as success_requests sum(is_fast) as fast_requests
+| eval availability_pct=round((success_requests/total_requests)*100,2)
+| eval latency_sli_pct=round((fast_requests/total_requests)*100,2)
+| eval overall_status=case(
+    availability_pct&lt;99 OR latency_sli_pct&lt;90,"Red",
+    availability_pct&lt;99.9 OR latency_sli_pct&lt;95,"Amber",
+    true(),"Green")
+| table overall_status
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+
+    <panel>
+      <single>
+        <title>Availability %</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| eval is_success=if(status_code&gt;=200 AND status_code&lt;500,1,0)
+| stats count as total_requests sum(is_success) as success_requests
+| eval availability_pct=round((success_requests/total_requests)*100,2)
+| table availability_pct
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="unit">%</option>
+      </single>
+    </panel>
+
+    <panel>
+      <single>
+        <title>Latency SLI %</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| eval is_fast=if(response_time_ms&lt;=2000,1,0)
+| stats count as total_requests sum(is_fast) as fast_requests
+| eval latency_sli_pct=round((fast_requests/total_requests)*100,2)
+| table latency_sli_pct
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="unit">%</option>
+      </single>
+    </panel>
+
+    <panel>
+      <single>
+        <title>Total Requests</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| stats count as total_requests
+| table total_requests
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <table>
+        <title>API-wise Executive Summary (click API)</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| eval is_success=if(status_code&gt;=200 AND status_code&lt;500,1,0)
+| eval is_error=if(status_code&gt;=500,1,0)
+| eval is_fast=if(response_time_ms&lt;=2000,1,0)
+| stats count as total_requests
+    sum(is_success) as success_requests
+    sum(is_error) as error_requests
+    sum(is_fast) as fast_requests
+    sparkline(count,1h) as req_trend
+    by api_name
+| eval availability_pct=round((success_requests/total_requests)*100,2)
+| eval latency_sli_pct=round((fast_requests/total_requests)*100,2)
+| eval error_rate_pct=round((error_requests/total_requests)*100,2)
+| eval rag_status=case(
+    availability_pct&lt;99 OR latency_sli_pct&lt;90,"Red",
+    availability_pct&lt;99.9 OR latency_sli_pct&lt;95,"Amber",
+    true(),"Green")
+| table api_name total_requests availability_pct latency_sli_pct error_rate_pct rag_status req_trend
+| sort api_name
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="count">20</option>
+        <option name="drilldown">row</option>
+        <drilldown>
+          <set token="tok_selected_api">$row.api_name$</set>
+          <unset token="tok_selected_url"></unset>
+        </drilldown>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <chart>
+        <title>P95 Latency Trend by API</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| timechart span=15m perc95(response_time_ms) as p95_latency_ms by api_name
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">right</option>
+      </chart>
+    </panel>
+
+    <panel>
+      <chart>
+        <title>5xx Error Trend by API</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| eval is_error=if(status_code&gt;=500,1,0)
+| timechart span=15m sum(is_error) by api_name
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.legend.placement">right</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <chart>
+        <title>Previous Day Same Time Trend</title>
+        <search>
+          <query>
+index=amazon_logs earliest=-48h@h latest=now
+[| makeresults
+| eval search=if("$tok_api$"="*" OR "$tok_api$"="", "", "api_name IN (" . "$tok_api$" . ")")
+| return $search]
+| timechart span=15m count as requests
+| timewrap 1d series=relative
+          </query>
+          <earliest>-48h@h</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">right</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row depends="$tok_selected_api$">
+    <panel>
+      <table>
+        <title>URL-Level Summary for $tok_selected_api$ (click URL)</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$ api_name="$tok_selected_api$"
+| eval url_name=coalesce(url, uri, endpoint, request_path)
+| where isnotnull(url_name)
+| eval is_success=if(status_code&gt;=200 AND status_code&lt;500,1,0)
+| eval is_error=if(status_code&gt;=500,1,0)
+| eval is_fast=if(response_time_ms&lt;=2000,1,0)
+| stats count as total_requests
+    sum(is_success) as success_requests
+    sum(is_error) as error_requests
+    sum(is_fast) as fast_requests
+    sparkline(count,1h) as req_trend
+    by url_name
+| eval availability_pct=round((success_requests/total_requests)*100,2)
+| eval latency_sli_pct=round((fast_requests/total_requests)*100,2)
+| eval error_rate_pct=round((error_requests/total_requests)*100,2)
+| rename url_name as url
+| sort - total_requests
+| table url total_requests availability_pct latency_sli_pct error_rate_pct req_trend
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="count">15</option>
+        <option name="drilldown">row</option>
+        <drilldown>
+          <set token="tok_selected_url">$row.url$</set>
+        </drilldown>
+      </table>
+    </panel>
+  </row>
+
+  <row depends="$tok_selected_url$">
+    <panel>
+      <chart>
+        <title>URL Trend for $tok_selected_api$ — $tok_selected_url$</title>
+        <search>
+          <query>
+index=amazon_logs earliest=$tok_time.earliest$ latest=$tok_time.latest$ api_name="$tok_selected_api$"
+| eval url_name=coalesce(url, uri, endpoint, request_path)
+| search url_name="$tok_selected_url$"
+| timechart span=15m count as request_count sum(eval(status_code&gt;=500)) as error_count
+          </query>
+          <earliest>$tok_time.earliest$</earliest>
+          <latest>$tok_time.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">right</option>
+      </chart>
+    </panel>
+  </row>
+</form>
