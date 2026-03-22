@@ -1,0 +1,521 @@
+{
+  "title": "Amazon API SLI / SLO Executive Dashboard",
+  "description": "Conservative Dashboard Studio JSON intended for Splunk Enterprise 9.4.3. Uses core visualizations, search data sources, inputs, and token-setting interactions.",
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$tok_time.earliest$",
+            "latest": "$tok_time.latest$"
+          }
+        }
+      }
+    },
+    "visualizations": {
+      "viz.singlevalue": {
+        "showProgressBar": false,
+        "showSparkline": false
+      },
+      "viz.table": {
+        "count": 15
+      }
+    },
+    "inputs": {
+      "input.timerange": {
+        "options": {
+          "token": "tok_time"
+        }
+      },
+      "input.multiselect": {
+        "options": {
+          "token": "tok_api"
+        }
+      },
+      "input.text": {}
+    }
+  },
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time Range",
+      "options": {
+        "token": "tok_time",
+        "defaultValue": "-24h@h,now"
+      }
+    },
+    "input_api": {
+      "type": "input.multiselect",
+      "title": "API Name",
+      "dataSources": {
+        "primary": "ds_api_options"
+      },
+      "options": {
+        "token": "tok_api",
+        "items": "> primary | seriesByName('api_name') | renameSeries('label') | renameSeries('value')",
+        "defaultValue": [
+          "*"
+        ],
+        "delimiter": ",",
+        "valuePrefix": "\"",
+        "valueSuffix": "\""
+      }
+    },
+    "input_incident_number": {
+      "type": "input.text",
+      "title": "Incident Number",
+      "options": {
+        "token": "incident_number",
+        "defaultValue": ""
+      }
+    },
+    "input_problem_statement": {
+      "type": "input.text",
+      "title": "Problem Statement",
+      "options": {
+        "token": "problem_statement",
+        "defaultValue": ""
+      }
+    },
+    "input_impact": {
+      "type": "input.text",
+      "title": "Impact",
+      "options": {
+        "token": "impact",
+        "defaultValue": ""
+      }
+    }
+  },
+  "dataSources": {
+    "ds_api_options": {
+      "type": "ds.search",
+      "name": "API Options",
+      "options": {
+        "query": "index=amazon_logs | stats count by api_name | sort api_name | fields api_name"
+      }
+    },
+    "ds_overall": {
+      "type": "ds.search",
+      "name": "Overall Status",
+      "options": {
+        "query": "index=amazon_logs [| makeresults | eval search=if(\"$tok_api$\"=\"*\" OR \"$tok_api$\"=\"\", \"\", \"api_name IN (\" . \"$tok_api$\" . \")\") | return $search] | eval is_success=if(status_code>=200 AND status_code<500,1,0) | eval is_fast=if(response_time_ms<=2000,1,0) | stats count as total_requests sum(is_success) as success_requests sum(is_fast) as fast_requests | eval availability_pct=round((success_requests/total_requests)*100,2) | eval latency_sli_pct=round((fast_requests/total_requests)*100,2) | eval overall_status=case(availability_pct<99 OR latency_sli_pct<90,\"Red\", availability_pct<99.9 OR latency_sli_pct<95,\"Amber\", true(),\"Green\") | fields overall_status availability_pct latency_sli_pct total_requests"
+      }
+    },
+    "ds_api_table": {
+      "type": "ds.search",
+      "name": "API Summary",
+      "options": {
+        "query": "index=amazon_logs [| makeresults | eval search=if(\"$tok_api$\"=\"*\" OR \"$tok_api$\"=\"\", \"\", \"api_name IN (\" . \"$tok_api$\" . \")\") | return $search] | eval is_success=if(status_code>=200 AND status_code<500,1,0) | eval is_error=if(status_code>=500,1,0) | eval is_fast=if(response_time_ms<=2000,1,0) | stats count as total_requests sum(is_success) as success_requests sum(is_error) as error_requests sum(is_fast) as fast_requests sparkline(count,1h) as req_trend by api_name | eval availability_pct=round((success_requests/total_requests)*100,2) | eval latency_sli_pct=round((fast_requests/total_requests)*100,2) | eval error_rate_pct=round((error_requests/total_requests)*100,2) | eval rag_status=case(availability_pct<99 OR latency_sli_pct<90,\"Red\", availability_pct<99.9 OR latency_sli_pct<95,\"Amber\", true(),\"Green\") | eval pac_action=\"Create PAC\" | table api_name total_requests availability_pct latency_sli_pct error_rate_pct rag_status pac_action req_trend | sort api_name"
+      }
+    },
+    "ds_latency": {
+      "type": "ds.search",
+      "name": "P95 Latency",
+      "options": {
+        "query": "index=amazon_logs [| makeresults | eval search=if(\"$tok_api$\"=\"*\" OR \"$tok_api$\"=\"\", \"\", \"api_name IN (\" . \"$tok_api$\" . \")\") | return $search] | timechart span=15m perc95(response_time_ms) as p95_latency_ms by api_name"
+      }
+    },
+    "ds_errors": {
+      "type": "ds.search",
+      "name": "5xx Errors",
+      "options": {
+        "query": "index=amazon_logs [| makeresults | eval search=if(\"$tok_api$\"=\"*\" OR \"$tok_api$\"=\"\", \"\", \"api_name IN (\" . \"$tok_api$\" . \")\") | return $search] | eval is_error=if(status_code>=500,1,0) | timechart span=15m sum(is_error) by api_name"
+      }
+    },
+    "ds_prevday": {
+      "type": "ds.search",
+      "name": "Previous Day Trend",
+      "options": {
+        "query": "index=amazon_logs earliest=-48h@h latest=now [| makeresults | eval search=if(\"$tok_api$\"=\"*\" OR \"$tok_api$\"=\"\", \"\", \"api_name IN (\" . \"$tok_api$\" . \")\") | return $search] | timechart span=15m count as requests | timewrap 1d series=relative"
+      }
+    },
+    "ds_url_table": {
+      "type": "ds.search",
+      "name": "URL Summary",
+      "options": {
+        "query": "index=amazon_logs api_name=\"$tok_selected_api$\" | eval url_name=coalesce(url, uri, endpoint, request_path) | where isnotnull(url_name) | eval is_success=if(status_code>=200 AND status_code<500,1,0) | eval is_error=if(status_code>=500,1,0) | eval is_fast=if(response_time_ms<=2000,1,0) | stats count as total_requests sum(is_success) as success_requests sum(is_error) as error_requests sum(is_fast) as fast_requests sparkline(count,1h) as req_trend by url_name | eval availability_pct=round((success_requests/total_requests)*100,2) | eval latency_sli_pct=round((fast_requests/total_requests)*100,2) | eval error_rate_pct=round((error_requests/total_requests)*100,2) | eval pac_action=\"Create PAC\" | rename url_name as url | sort - total_requests | table url total_requests availability_pct latency_sli_pct error_rate_pct pac_action req_trend"
+      }
+    },
+    "ds_url_trend": {
+      "type": "ds.search",
+      "name": "URL Trend",
+      "options": {
+        "query": "index=amazon_logs api_name=\"$tok_selected_api$\" | eval url_name=coalesce(url, uri, endpoint, request_path) | search url_name=\"$tok_selected_url$\" | timechart span=15m count as request_count sum(eval(status_code>=500)) as error_count"
+      }
+    },
+    "ds_pac_context": {
+      "type": "ds.search",
+      "name": "PAC Context",
+      "options": {
+        "query": "| makeresults | eval api_name=\"$pac_api_name$\" | eval url_name=\"$pac_url_name$\" | eval availability_pct=\"$pac_availability_pct$\" | eval latency_sli_pct=\"$pac_latency_sli_pct$\" | eval error_rate_pct=\"$pac_error_rate_pct$\" | eval rag_status=\"$pac_rag_status$\" | eval start_time=\"$pac_start_time$\" | eval end_time=\"$pac_end_time$\" | eval incident_number=\"$incident_number$\" | eval problem_statement=\"$problem_statement$\" | eval impact=\"$impact$\" | table incident_number problem_statement api_name url_name start_time end_time impact availability_pct latency_sli_pct error_rate_pct rag_status"
+      }
+    }
+  },
+  "visualizations": {
+    "viz_overall_status": {
+      "type": "viz.singlevalue",
+      "title": "Overall SLO Status",
+      "dataSources": {
+        "primary": "ds_overall"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('overall_status')"
+      }
+    },
+    "viz_availability": {
+      "type": "viz.singlevalue",
+      "title": "Availability %",
+      "dataSources": {
+        "primary": "ds_overall"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('availability_pct')"
+      }
+    },
+    "viz_latency_sli": {
+      "type": "viz.singlevalue",
+      "title": "Latency SLI %",
+      "dataSources": {
+        "primary": "ds_overall"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('latency_sli_pct')"
+      }
+    },
+    "viz_total_requests": {
+      "type": "viz.singlevalue",
+      "title": "Total Requests",
+      "dataSources": {
+        "primary": "ds_overall"
+      },
+      "options": {
+        "majorValue": "> primary | seriesByName('total_requests')"
+      }
+    },
+    "viz_api_table": {
+      "type": "viz.table",
+      "title": "API-wise Executive Summary",
+      "dataSources": {
+        "primary": "ds_api_table"
+      },
+      "options": {
+        "count": 20
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "tok_selected_api",
+                "key": "row.api_name.value"
+              },
+              {
+                "token": "pac_api_name",
+                "key": "row.api_name.value"
+              },
+              {
+                "token": "pac_url_name",
+                "value": ""
+              },
+              {
+                "token": "pac_availability_pct",
+                "key": "row.availability_pct.value"
+              },
+              {
+                "token": "pac_latency_sli_pct",
+                "key": "row.latency_sli_pct.value"
+              },
+              {
+                "token": "pac_error_rate_pct",
+                "key": "row.error_rate_pct.value"
+              },
+              {
+                "token": "pac_rag_status",
+                "key": "row.rag_status.value"
+              },
+              {
+                "token": "pac_start_time",
+                "value": "$tok_time.earliest$"
+              },
+              {
+                "token": "pac_end_time",
+                "value": "$tok_time.latest$"
+              },
+              {
+                "token": "show_pac_form",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_latency": {
+      "type": "viz.line",
+      "title": "P95 Latency Trend by API",
+      "dataSources": {
+        "primary": "ds_latency"
+      }
+    },
+    "viz_errors": {
+      "type": "viz.column",
+      "title": "5xx Error Trend by API",
+      "dataSources": {
+        "primary": "ds_errors"
+      }
+    },
+    "viz_prevday": {
+      "type": "viz.line",
+      "title": "Previous Day Same Time Trend",
+      "dataSources": {
+        "primary": "ds_prevday"
+      }
+    },
+    "viz_url_table": {
+      "type": "viz.table",
+      "title": "URL-Level Summary",
+      "dataSources": {
+        "primary": "ds_url_table"
+      },
+      "options": {
+        "count": 15
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "tok_selected_url",
+                "key": "row.url.value"
+              },
+              {
+                "token": "pac_api_name",
+                "value": "$tok_selected_api$"
+              },
+              {
+                "token": "pac_url_name",
+                "key": "row.url.value"
+              },
+              {
+                "token": "pac_availability_pct",
+                "key": "row.availability_pct.value"
+              },
+              {
+                "token": "pac_latency_sli_pct",
+                "key": "row.latency_sli_pct.value"
+              },
+              {
+                "token": "pac_error_rate_pct",
+                "key": "row.error_rate_pct.value"
+              },
+              {
+                "token": "pac_rag_status",
+                "value": ""
+              },
+              {
+                "token": "pac_start_time",
+                "value": "$tok_time.earliest$"
+              },
+              {
+                "token": "pac_end_time",
+                "value": "$tok_time.latest$"
+              },
+              {
+                "token": "show_pac_form",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "viz_url_trend": {
+      "type": "viz.line",
+      "title": "URL Trend",
+      "dataSources": {
+        "primary": "ds_url_trend"
+      }
+    },
+    "viz_pac_context": {
+      "type": "viz.table",
+      "title": "PAC Template",
+      "dataSources": {
+        "primary": "ds_pac_context"
+      },
+      "options": {
+        "count": 1
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1440,
+      "height": 1620
+    },
+    "structure": [
+      {
+        "item": "input_time",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 20,
+          "w": 250,
+          "h": 60
+        }
+      },
+      {
+        "item": "input_api",
+        "type": "block",
+        "position": {
+          "x": 290,
+          "y": 20,
+          "w": 360,
+          "h": 60
+        }
+      },
+      {
+        "item": "viz_overall_status",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 110,
+          "w": 330,
+          "h": 130
+        }
+      },
+      {
+        "item": "viz_availability",
+        "type": "block",
+        "position": {
+          "x": 370,
+          "y": 110,
+          "w": 330,
+          "h": 130
+        }
+      },
+      {
+        "item": "viz_latency_sli",
+        "type": "block",
+        "position": {
+          "x": 720,
+          "y": 110,
+          "w": 330,
+          "h": 130
+        }
+      },
+      {
+        "item": "viz_total_requests",
+        "type": "block",
+        "position": {
+          "x": 1070,
+          "y": 110,
+          "w": 330,
+          "h": 130
+        }
+      },
+      {
+        "item": "viz_api_table",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 270,
+          "w": 1380,
+          "h": 240
+        }
+      },
+      {
+        "item": "viz_latency",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 540,
+          "w": 680,
+          "h": 230
+        }
+      },
+      {
+        "item": "viz_errors",
+        "type": "block",
+        "position": {
+          "x": 720,
+          "y": 540,
+          "w": 680,
+          "h": 230
+        }
+      },
+      {
+        "item": "viz_prevday",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 800,
+          "w": 1380,
+          "h": 200
+        }
+      },
+      {
+        "item": "viz_url_table",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 1030,
+          "w": 1380,
+          "h": 210
+        }
+      },
+      {
+        "item": "viz_url_trend",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 1270,
+          "w": 1380,
+          "h": 210
+        }
+      },
+      {
+        "item": "input_incident_number",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 1510,
+          "w": 320,
+          "h": 60
+        }
+      },
+      {
+        "item": "input_problem_statement",
+        "type": "block",
+        "position": {
+          "x": 360,
+          "y": 1510,
+          "w": 520,
+          "h": 60
+        }
+      },
+      {
+        "item": "input_impact",
+        "type": "block",
+        "position": {
+          "x": 900,
+          "y": 1510,
+          "w": 500,
+          "h": 60
+        }
+      },
+      {
+        "item": "viz_pac_context",
+        "type": "block",
+        "position": {
+          "x": 20,
+          "y": 1585,
+          "w": 1380,
+          "h": 180
+        }
+      }
+    ]
+  }
+}
